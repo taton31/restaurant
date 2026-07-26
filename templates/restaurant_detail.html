@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% from "macros.html" import rate_popover, dish_card %}
+
+{% block content %}
+  <div class="topbar">
+    <div></div>
+    <div class="topbar-title">
+      <div class="brand">{{ restaurant.name }}</div>
+    </div>
+    <div class="actions topbar-actions">
+      <a class="btn2" href="/">Назад</a>
+    </div>
+  </div>
+
+  <div class="hero">
+    <div class="panel restaurant-hero-image">
+      <div class="media-frame">
+        <img class="cover" src="{{ restaurant_image(restaurant) }}" alt="{{ restaurant.name }}" loading="lazy">
+        <div class="image-overlay restaurant-overlay">
+          <div class="restaurant-top">
+            {{ rate_popover("/restaurants/" ~ restaurant.slug ~ "/vote", "Оценить ресторан", rest_stats.score) }}
+          </div>
+          <div class="restaurant-bottom">
+            <div class="score-row">
+              <span class="score-chip">Моя: {{ display_score(rest_stats.score) }}</span>
+              <span class="score-chip source">Яндекс: {{ display_source_score(restaurant) }}</span>
+              <span class="score-chip source">Блюд: {{ rest_stats.dish_count }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <form method="get" action="/restaurants/{{ restaurant.slug }}" class="inline">
+        <input type="search" name="q" value="{{ q }}" placeholder="Поиск по меню">
+        <button type="submit">Найти</button>
+      </form>
+      <form method="post" action="/restaurants/{{ restaurant.slug }}/comment" style="margin-top:12px;">
+        <textarea name="text" placeholder="Комментарий к ресторану" maxlength="2000" required></textarea>
+        <button type="submit" style="margin-top:8px;">Оставить комментарий</button>
+      </form>
+      {% for comment in comments %}
+        <div class="comment">
+          <div class="meta">{{ comment.created_at.strftime("%d.%m.%Y %H:%M") }}</div>
+          <div>{{ comment.text }}</div>
+        </div>
+      {% else %}
+        <div class="comment muted">Комментариев пока нет.</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="dish-list">
+    {% for row in dish_rows %}
+      {{ dish_card(row.dish, row.stats) }}
+    {% else %}
+      <div class="panel empty">Меню пока пустое. Оно обновится автоматически при следующей синхронизации.</div>
+    {% endfor %}
+  </div>
+{% endblock %}

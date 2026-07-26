@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% from "macros.html" import restaurant_card %}
+
+{% block content %}
+  <div class="topbar topbar-single">
+    <div class="topbar-title">
+      <div class="brand">Мой рейтинг ресторанов</div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-bottom:14px;">
+    <form class="searchbar" method="get" action="/">
+      <input type="search" name="q" value="{{ q }}" placeholder="Поиск ресторанов">
+      <select name="sort">
+        <option value="source_rating" {% if sort == "source_rating" %}selected{% endif %}>Внешний рейтинг</option>
+        <option value="my_rating" {% if sort == "my_rating" %}selected{% endif %}>Мой рейтинг</option>
+        <option value="name" {% if sort == "name" %}selected{% endif %}>Название</option>
+      </select>
+      <select name="min_my_rating">
+        <option value="">Любая моя оценка</option>
+        <option value="10" {% if min_rating_value == 10 %}selected{% endif %}>Только 10</option>
+        <option value="9" {% if min_rating_value == 9 %}selected{% endif %}>9+</option>
+        <option value="8" {% if min_rating_value == 8 %}selected{% endif %}>8+</option>
+        <option value="7" {% if min_rating_value == 7 %}selected{% endif %}>7+</option>
+        <option value="6" {% if min_rating_value == 6 %}selected{% endif %}>6+</option>
+      </select>
+      <button type="submit">Найти</button>
+    </form>
+  </div>
+
+  <div class="grid">
+    {% for row in rows %}
+      {{ restaurant_card(row.restaurant, row.stats) }}
+    {% else %}
+      <div class="panel empty">Ничего не найдено</div>
+    {% endfor %}
+  </div>
+{% endblock %}

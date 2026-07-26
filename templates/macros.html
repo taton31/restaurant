@@ -1,0 +1,64 @@
+{% macro rate_popover(action, label, current_score) %}
+  <details class="rate-popover">
+    <summary class="rate-button" title="{{ label }}" aria-label="{{ label }}">★</summary>
+    <form class="score-menu" action="{{ action }}" method="post">
+      {% for score in score_values %}
+        <button
+          class="score-option{% if current_score == score %} active{% endif %}"
+          type="submit"
+          name="score"
+          value="{{ score }}"
+          aria-label="Оценка {{ score }}"
+        >{{ score }}</button>
+      {% endfor %}
+    </form>
+  </details>
+{% endmacro %}
+
+{% macro restaurant_card(restaurant, stats) %}
+  <article class="card restaurant">
+    <a class="card-link" href="/restaurant/{{ restaurant.id }}" aria-label="Открыть меню {{ restaurant.name }}"></a>
+    <div class="media-frame">
+      <img class="cover" src="{{ restaurant_image(restaurant) }}" alt="{{ restaurant.name }}" loading="lazy">
+      <div class="image-overlay restaurant-overlay">
+        <div class="restaurant-top">
+          {{ rate_popover("/restaurant/" ~ restaurant.id ~ "/vote", "Оценить ресторан", stats.score) }}
+        </div>
+        <div class="restaurant-bottom">
+          <div class="name">{{ restaurant.name }}</div>
+          <div class="score-row">
+            <span class="score-chip">Моя: {{ display_score(stats.score) }}</span>
+            <span class="score-chip source">Яндекс: {{ display_source_score(restaurant) }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </article>
+{% endmacro %}
+
+{% macro dish_card(dish, stats) %}
+  <article class="card dish">
+    <div class="media-frame">
+      <img class="dish-image" src="{{ dish_image(dish) }}" alt="{{ dish.name }}" loading="lazy">
+      <div class="image-overlay">
+        <div class="overlay-top">
+          {{ rate_popover("/dishes/" ~ dish.id ~ "/vote", "Оценить блюдо", stats.score) }}
+        </div>
+        <div class="overlay-bottom">
+          <div class="score-row">
+            <span class="score-chip">Моя: {{ display_score(stats.score) }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="content">
+      <div class="dish-title-line">
+        <div class="name">{{ dish.name }}</div>
+        {% if dish.price %}
+          <div class="price">{{ dish.price }}</div>
+        {% endif %}
+      </div>
+      <div class="muted">{{ dish.description or "Без описания" }}</div>
+    </div>
+  </article>
+{% endmacro %}
