@@ -661,7 +661,7 @@ def index(request: Request, q: str = "", sort: str = "source_rating", min_my_rat
 
         rows = []
         for restaurant in restaurants:
-            print(restaurant["name"])
+            print(restaurant)
             stats = get_restaurant_stats(session, restaurant.id)
             if min_rating_value is not None and (stats["score"] is None or stats["score"] < min_rating_value):
                 continue
