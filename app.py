@@ -656,6 +656,7 @@ def index(request: Request, q: str = "", sort: str = "source_rating", min_my_rat
         query = select(Restaurant).where(Restaurant.business == "restaurant")
         if q.strip():
             like = f"%{q.strip().lower()}%"
+            print(like)
             query = query.where(func.lower(Restaurant.name).like(like) | func.lower(Restaurant.slug).like(like))
         restaurants = session.execute(query).scalars().all()
 
