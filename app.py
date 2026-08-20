@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
@@ -162,7 +164,7 @@ async def lifespan(app: FastAPI):
         print(f"[startup] initial sync failed: {exc}")
 
     if not scheduler.running:
-        scheduler.add_job(sync_data, "cron", hour=SYNC_HOUR_UTC, minute=0, id="daily_sync", replace_existing=True)
+        scheduler.add_job(daily_sync_data, "cron", hour=SYNC_HOUR_UTC, minute=0, id="daily_sync", replace_existing=True)
         scheduler.start()
 
     try:
@@ -251,6 +253,74 @@ def _slugify(value: str) -> str:
     value = re.sub(r"[^a-z0-9а-яё]+", "-", value, flags=re.IGNORECASE)
     value = re.sub(r"-{2,}", "-", value).strip("-")
     return value or "restaurant"
+
+
+def _compact_text(value: Any) -> str:
+    if value is None:
+        return ""
+
+    text = unicodedata.normalize("NFKC", str(value)).casefold().replace("ё", "е")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _search_text(value: Any) -> str:
+    text = _compact_text(value)
+    text = re.sub(r"[\W_]+", " ", text, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _matches_search(query: str, *values: Any) -> bool:
+    if not str(query).strip():
+        return True
+
+    needle = _search_text(query)
+    if not needle:
+        return False
+    return any(needle in _search_text(value) for value in values)
+
+
+def _clean_external_id(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    external_id = str(value).strip()
+    return external_id or None
+
+
+def _record_value(record: Any, key: str) -> Any:
+    if isinstance(record, dict):
+        return record.get(key)
+    return getattr(record, key, None)
+
+
+def _restaurant_identity_key(record: Any) -> tuple[str, str]:
+    external_id = _clean_external_id(_record_value(record, "external_id"))
+    if external_id:
+        return ("external_id", _compact_text(external_id))
+
+    source_key = _clean_external_id(_record_value(record, "source_key"))
+    if source_key:
+        return ("source_key", _compact_text(source_key))
+
+    slug = _clean_external_id(_record_value(record, "slug"))
+    if slug:
+        return ("slug", _compact_text(slug))
+
+    return ("name", _search_text(_record_value(record, "name")))
+
+
+def _data_completeness(record: Any) -> int:
+    return sum(
+        1
+        for key in ("rating_text", "rating_value", "rating_count", "image_url", "logo_url", "external_id", "raw_json")
+        if _record_value(record, key)
+    )
+
+
+def _prefer_restaurant_data(new: Any, existing: Any) -> bool:
+    new_rating_count = _record_value(new, "rating_count") or 0
+    existing_rating_count = _record_value(existing, "rating_count") or 0
+    return (_data_completeness(new), new_rating_count) > (_data_completeness(existing), existing_rating_count)
 
 
 def _normalize_image_url(value: Any, width: int = 700, height: int = 700) -> Optional[str]:
@@ -381,15 +451,12 @@ def extract_restaurants_from_payload(payload: Any) -> list[dict[str, Any]]:
             continue
 
         normalized = _normalize_restaurant(node, index)
-        key = normalized["slug"]
+        key = ":".join(_restaurant_identity_key(normalized))
         existing = candidates.get(key)
         if not existing:
             candidates[key] = normalized
-        else:
-            score_new = sum(1 for k in ("rating_text", "rating_value", "image_url", "logo_url") if normalized.get(k))
-            score_old = sum(1 for k in ("rating_text", "rating_value", "image_url", "logo_url") if existing.get(k))
-            if score_new > score_old:
-                candidates[key] = normalized
+        elif _prefer_restaurant_data(normalized, existing):
+            candidates[key] = normalized
         index += 1
 
     return list(candidates.values())
@@ -534,16 +601,108 @@ def refresh_menu(restaurant_id: int) -> int:
         return len(items)
 
 
+def _restaurant_keep_key(restaurant: Restaurant) -> tuple[int, int, str, int]:
+    return (
+        _data_completeness(restaurant),
+        restaurant.rating_count or 0,
+        str(restaurant.updated_at or ""),
+        -(restaurant.id or 0),
+    )
+
+
+def _copy_missing_restaurant_data(target: Restaurant, source: Restaurant) -> None:
+    for key in (
+        "source_key",
+        "external_id",
+        "slug",
+        "name",
+        "business",
+        "rating_text",
+        "rating_value",
+        "rating_count",
+        "image_url",
+        "logo_url",
+        "raw_json",
+    ):
+        target_value = getattr(target, key)
+        source_value = getattr(source, key)
+        if target_value in (None, "", {}):
+            setattr(target, key, source_value)
+
+
+def merge_duplicate_restaurants(session) -> int:
+    restaurants = session.execute(select(Restaurant).where(Restaurant.business == "restaurant")).scalars().all()
+    groups: dict[tuple[str, str], list[Restaurant]] = defaultdict(list)
+
+    for restaurant in restaurants:
+        key = _restaurant_identity_key(restaurant)
+        if key[1]:
+            groups[key].append(restaurant)
+
+    merged = 0
+    for duplicates in groups.values():
+        if len(duplicates) < 2:
+            continue
+
+        primary = max(duplicates, key=_restaurant_keep_key)
+        for duplicate in duplicates:
+            if duplicate.id == primary.id:
+                continue
+
+            _copy_missing_restaurant_data(primary, duplicate)
+            session.query(Dish).filter(Dish.restaurant_id == duplicate.id).update(
+                {Dish.restaurant_id: primary.id},
+                synchronize_session=False,
+            )
+            session.query(RestaurantVote).filter(RestaurantVote.restaurant_id == duplicate.id).update(
+                {RestaurantVote.restaurant_id: primary.id},
+                synchronize_session=False,
+            )
+            session.query(RestaurantComment).filter(RestaurantComment.restaurant_id == duplicate.id).update(
+                {RestaurantComment.restaurant_id: primary.id},
+                synchronize_session=False,
+            )
+            session.delete(duplicate)
+            merged += 1
+
+    if merged:
+        session.flush()
+    return merged
+
+
+def find_existing_restaurant(session, item: dict[str, Any]) -> Optional[Restaurant]:
+    external_id = _clean_external_id(item.get("external_id"))
+    if external_id:
+        matches = session.execute(select(Restaurant).where(Restaurant.external_id == external_id)).scalars().all()
+        if matches:
+            return max(matches, key=_restaurant_keep_key)
+
+    source_key = _clean_external_id(item.get("source_key"))
+    if source_key:
+        restaurant = session.execute(select(Restaurant).where(Restaurant.source_key == source_key)).scalar_one_or_none()
+        if restaurant is not None:
+            return restaurant
+
+    slug = _clean_external_id(item.get("slug"))
+    if slug:
+        restaurant = session.execute(select(Restaurant).where(Restaurant.slug == slug)).scalar_one_or_none()
+        if restaurant is not None:
+            return restaurant
+
+    return None
+
+
 def sync_data(refresh_menus: bool = AUTO_SYNC_MENUS) -> dict[str, int]:
     payload = _load_payload_from_yandex()
     restaurants = extract_restaurants_from_payload(payload)
 
     with SessionLocal() as session:
+        merged_duplicates = merge_duplicate_restaurants(session)
         upserted = 0
         restaurant_ids: list[int] = []
 
         for item in restaurants:
-            restaurant = session.execute(select(Restaurant).where(Restaurant.slug == item["slug"])).scalar_one_or_none()
+            restaurant = find_existing_restaurant(session, item)
             if restaurant is None:
                 restaurant = Restaurant(**item)
                 session.add(restaurant)
@@ -557,6 +716,7 @@ def sync_data(refresh_menus: bool = AUTO_SYNC_MENUS) -> dict[str, int]:
         for stale in session.execute(select(Restaurant).where(Restaurant.business != "restaurant")).scalars().all():
             session.delete(stale)
 
+        merged_duplicates += merge_duplicate_restaurants(session)
         session.commit()
 
     refreshed_dishes = 0
@@ -567,7 +727,13 @@ def sync_data(refresh_menus: bool = AUTO_SYNC_MENUS) -> dict[str, int]:
             except Exception as exc:
                 print(f"[sync] menu refresh failed for restaurant_id={restaurant_id}: {exc}")
 
-    return {"restaurants": upserted, "dishes": refreshed_dishes}
+    return {"restaurants": upserted, "dishes": refreshed_dishes, "merged_duplicates": merged_duplicates}
+
+
+def daily_sync_data() -> dict[str, int]:
+    result = sync_data(refresh_menus=True)
+    print(f"[sync] daily sync completed: {result}")
+    return result
 
 
 def get_restaurant_stats(session, restaurant_id: int) -> dict[str, Any]:
@@ -655,9 +821,14 @@ def index(request: Request, q: str = "", sort: str = "source_rating", min_my_rat
     with SessionLocal() as session:
         query = select(Restaurant).where(Restaurant.business == "restaurant")
         if q.strip():
-            like = f"%{q.strip().lower()}%"
-            query = query.where(func.lower(Restaurant.name).like(like) | func.lower(Restaurant.slug).like(like))
+            query = query.where(Restaurant.name.is_not(None))
         restaurants = session.execute(query).scalars().all()
+        if q.strip():
+            restaurants = [
+                restaurant
+                for restaurant in restaurants
+                if _matches_search(q, restaurant.name, restaurant.slug, restaurant.external_id)
+            ]
 
         rows = []
         for restaurant in restaurants:
@@ -700,7 +871,7 @@ def index(request: Request, q: str = "", sort: str = "source_rating", min_my_rat
 
 @app.post("/sync")
 async def sync_now(background_tasks: BackgroundTasks):
-    background_tasks.add_task(sync_data, False)
+    background_tasks.add_task(sync_data, True)
     return RedirectResponse(url="/", status_code=303)
 
 
@@ -753,10 +924,9 @@ def restaurant_detail(request: Request, slug: str, q: str = ""):
 
         restaurant = session.execute(select(Restaurant).where(Restaurant.slug == slug)).scalar_one()
         dishes_query = select(Dish).where(Dish.restaurant_id == restaurant.id)
-        if q.strip():
-            like = f"%{q.strip()}%"
-            dishes_query = dishes_query.where(Dish.name.ilike(like) | Dish.description.ilike(like))
         dishes = session.execute(dishes_query).scalars().all()
+        if q.strip():
+            dishes = [dish for dish in dishes if _matches_search(q, dish.name, dish.description)]
 
         rest_stats = get_restaurant_stats(session, restaurant.id)
         comments = session.execute(
